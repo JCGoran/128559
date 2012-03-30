@@ -1,0 +1,376 @@
+//Created by Paulo Aguiar [pauloaguiar@fc.up.pt]
+
+// Steps:
+// 1 - CREATE WDR neuron and interneuron from the respective template cells
+// 2 - SET INPUT SIGNALS/STIMULI
+// 3 - SET SYNAPSES/RECEPTORS
+// 4 - CONNECT STIMULI TO SYNAPSES
+// 5 - PROVIDE NOISE TO WDR
+// 6 - FINAL COMMANDS
+
+
+
+
+
+// 1 *****************************************************************************************************
+
+// CREATE WDR neuron and interneuron from the respective template cells
+
+load_file("WDR.hoc")
+load_file("interneuron.hoc")
+
+objref wdr, interneuron
+wdr = new WDR()
+interneuron = new Interneuron()
+
+
+
+
+
+// 2 *****************************************************************************************************
+
+// SET INPUT SIGNALS/STIMULI
+// C-fibres and Ad-fibres signals are driven by spike-times stored in vectors
+// noise signals are driven by NetStim objects
+
+// signal periods; all times are in ms
+n_burst_spikes = 1		 	// define the number of spikes created by each stim in the fibres
+T0 = 10.0					// if each stim produces a short burst of spikes, this is their ISI [ms]
+n_close_stims = 1			// define the number of stims in each set (ex: 1=singlet; 3=triplets)
+T1 = 300.0					// in heterogeneous stimulation n_close_stims are separated by T1 [ms]
+n_stim_sets = 15			// define the number of stim sets
+T2 = 1000.0					// period between stimuli sets [ms]
+start_time = 1000.0			// time for first stim [ms]
+
+//tstop is defined after loading the session (close to the end of this file)
+
+// NOTES:	average stimuli period = T2 / n_close_stims
+//			total stims = n_close_stims * n_stim_sets
+
+// contruct the stimulus times vector
+objref stim_times
+stim_times  = new Vector(n_stim_sets*n_close_stims*n_burst_spikes, 0.0)
+index = 0
+for i=0,n_stim_sets-1 {
+    for j=0,n_close_stims-1 {
+		for k=0,n_burst_spikes-1 {
+		    stim_times.x[index] = start_time + i * T2 + j * T1 + k * T0
+		    index = index + 1
+		}
+    }
+}
+
+// for Poisson stimulation: contruct the stimulus times vector
+/*
+objref r, stim_times
+r = new Random(666)
+r.negexp(T2)
+stim_times  = new Vector(n_stim_sets, 0.0)
+last_time = start_time
+for i=0,n_stim_sets-1 {
+    stim_times.x[i] = last_time
+    last_time = last_time + r.repick()
+}
+*/
+
+
+printf("\nSTIMULATION TIMES")
+stim_times.printf()
+
+
+
+
+// 3 *****************************************************************************************************
+
+// SET CONNECTIONS/SYNAPSES
+//	Ad-fibres	--> NMDAR, AMPAR	--> wdr
+//	C-fibres	--> NMDAR, AMPAR, NK1R	--> interneuron
+//	interneuron	--> NMDAR, AMPAR, GABAR	--> wdr
+//	interneuron	--> GABAAR		--> wdr
+//	noise_inh	--> GABAAR		--> wdr
+//	noise_exc	--> AMPAR		--> wdr
+
+// Create post-synaptic receptors for all synapses
+
+
+
+// SYNAPSES FROM Ad-FIBRES
+// -----------------------
+
+N_A  = 20		// number of A synapses impinging on WDR
+Ad_delay = 30.0		// delay in the activation of Ad synapses [ms]
+Ad_dispersion = 5.0	//dispersion in the arrival time of Ad signals [ms]
+
+objref nil
+objref ampar_Ad[N_A], nmdar_Ad[N_A]
+objref ampa_Ad_conn[N_A], nmda_Ad_conn[N_A]
+
+for i=0,N_A-1 {
+    
+    wdr.dendrite ampar_Ad[i]  = new AMPA_DynSyn(0.5)
+    ampar_Ad[i].tau_fac   = 0.1 // NOT SUBJECT TO SHORT-TERM PLASTICITY
+    ampar_Ad[i].tau_rec   = 0.1
+    ampar_Ad[i].U1        = 1.0
+    ampar_Ad[i].tau_rise  = 0.1
+    ampar_Ad[i].tau_decay = 5.0
+    
+    //netcon = new NetCon(source, target, threshold [mV], delay [ms], weight [uS]) -> delay is overwritten by FIinitializeHandler
+    ampa_Ad_conn[i] = new NetCon(nil, ampar_Ad[i], -30.0, 0.0 , 0.0008)//0.0008 (0.00085 in NMDA block exp)
+    
+    
+    wdr.dendrite nmdar_Ad[i]  = new NMDA_DynSyn(0.5)
+    nmdar_Ad[i].tau_fac   = 0.1 // NOT SUBJECT TO SHORT-TERM PLASTICITY
+    nmdar_Ad[i].tau_rec   = 0.1
+    nmdar_Ad[i].U1        = 1.0
+    nmdar_Ad[i].tau_rise  = 2.0
+    nmdar_Ad[i].tau_decay = 100.0
+    
+    //netcon = new NetCon(source, target, threshold [mV], delay [ms], weight [uS]) -> delay is overwritten by FIinitializeHandler
+    nmda_Ad_conn[i] = new NetCon(nil, nmdar_Ad[i], -30.0, 0.0 , 0.0001)//0.0001
+    
+}
+
+// the activation times of Ad-fibres are set together with C-fibres - below
+
+
+
+// SYNAPSES FROM C-FIBRES
+// ----------------------
+
+objref nil
+objref ampar_C, nmdar_C, nk1r_C, nk1r_C_WDR
+objref ampa_C_conn, nmda_C_conn, nk1_C_conn, nk1_C_WDR_conn
+
+interneuron.dendrite ampar_C = new AMPA_DynSyn(0.5)
+ampar_C.tau_fac   = 0.1//3000.0
+ampar_C.tau_rec   = 0.1//200.0
+ampar_C.U1        = 1.0//0.2
+ampar_C.tau_rise  = 0.1
+ampar_C.tau_decay = 5.0
+
+interneuron.dendrite nmdar_C = new NMDA_DynSyn(0.5)
+nmdar_C.tau_fac   = 0.1//3000.0
+nmdar_C.tau_rec   = 0.1//200.0
+nmdar_C.U1        = 1.0//0.2
+nmdar_C.tau_rise  = 2.0
+nmdar_C.tau_decay = 100.0
+
+interneuron.dendrite nk1r_C = new NK1_DynSyn(0.5)
+nk1r_C.tau_fac    = 0.1//3000.0
+nk1r_C.tau_rec    = 0.1//200.0
+nk1r_C.U1         = 1.0//0.2 
+nk1r_C.tau_rise   = 100.0
+nk1r_C.tau_decay  = 3000.0
+
+wdr.dendrite nk1r_C_WDR = new NK1_DynSyn(0.5) // substance P diffusion to deeper laminae reaches WDR which have some NK1R
+nk1r_C_WDR.tau_fac    = 0.1//3000.0
+nk1r_C_WDR.tau_rec    = 0.1//200.0
+nk1r_C_WDR.U1         = 1.0//0.2 
+nk1r_C_WDR.tau_rise   = 200.0
+nk1r_C_WDR.tau_decay  = 3000.0
+
+
+//netcon = new NetCon(source, target, threshold [mV], delay [ms], weight [uS]) -> delay is overwritten by FIinitializeHandler
+ampa_C_conn     = new NetCon(nil, ampar_C   , -30.0, 0.0, 0.008000) //0.008000
+nmda_C_conn     = new NetCon(nil, nmdar_C   , -30.0, 0.0, 0.004000) //0.004000
+nk1_C_conn      = new NetCon(nil, nk1r_C    , -30.0, 0.0, 0.000020) //0.000020; if bigger interneuron will show strong windup (but constrained by iKCa)
+nk1_C_WDR_conn  = new NetCon(nil, nk1r_C_WDR, -30.0, 0.0, 0.000015) //0.000015; smaller than above to reflect diffusion and less expression
+
+
+//set activation times
+objref fih
+fih = new FInitializeHandler("loadqueue()")
+
+proc loadqueue() { local ii, jj, event_time  localobj r
+        
+    r = new Random(123456789) // use a different seed if you need different random streams; "123456789" is the seed used in the paper figures
+    
+    //load Ad-fiber spike times
+    for ii=0,stim_times.size()-1 {
+	
+	//distribute through all synapses
+	for jj=0,N_A-1 {
+	    
+	    event_time = stim_times.x[ii] + Ad_delay + Ad_dispersion * r.repick()
+
+	    ampa_Ad_conn[jj].event( event_time )
+	    nmda_Ad_conn[jj].event( event_time )
+	    
+	}
+    }        
+    
+    //load C-fiber spike times
+    for ii=0,stim_times.size()-1 {
+	
+	event_time = stim_times.x[ii] // THE C-FIBRES DELAY IS PLACED AFTER THE INTERNEURON TO ALLOW CONTROLED DISPERSION
+
+	ampa_C_conn.event( event_time )
+	nmda_C_conn.event( event_time )
+	nk1_C_conn.event( event_time )
+	nk1_C_WDR_conn.event( event_time )	    
+	
+    }
+    
+}
+
+
+
+
+// SYNAPSES FROM INTERNEURON
+// -------------------------
+
+N_IC = 20		// number of interneuron (from C) synapses impinging on WDR
+C_delay = 200.0		// conduction in C-fibres is slower; this is the delay
+C_dispersion = 20.0	// dispersion in the arrival time of C signals [ms]
+
+objref ampar_interneuron[N_IC], nmdar_interneuron[N_IC], gabaar_interneuron[N_IC]
+objref ampa_interneuron_conn[N_IC], nmda_interneuron_conn[N_IC], gabaa_interneuron_conn[N_IC]
+
+objref r
+r = new Random(123456789) // use a different seed if you need different random streams; the seed used for the figures in the paper was 123456789
+
+for i=0,N_IC-1 {
+    
+    wdr.dendrite ampar_interneuron[i]  = new AMPA_DynSyn(0.5)
+    ampar_interneuron[i].tau_fac   = 0.1
+    ampar_interneuron[i].tau_rec   = 0.1
+    ampar_interneuron[i].U1        = 1.0
+    ampar_interneuron[i].tau_rise  = 0.1
+    ampar_interneuron[i].tau_decay = 5.0
+    
+    wdr.dendrite nmdar_interneuron[i]  = new NMDA_DynSyn(0.5)
+    nmdar_interneuron[i].tau_fac   = 0.1
+    nmdar_interneuron[i].tau_rec   = 0.1
+    nmdar_interneuron[i].U1        = 1.0
+    nmdar_interneuron[i].tau_rise  = 2.0
+    nmdar_interneuron[i].tau_decay = 100.0
+    
+    wdr.dendrite gabaar_interneuron[i]  = new GABAa_DynSyn(0.5)
+    gabaar_interneuron[i].tau_fac   = 0.1 // NOT SUBJECT TO SHORT-TERM PLASTICITY
+    gabaar_interneuron[i].tau_rec   = 0.1
+    gabaar_interneuron[i].U1        = 1.0
+    gabaar_interneuron[i].tau_rise  = 0.1
+    gabaar_interneuron[i].tau_decay = 10.0
+    
+    
+    event_time = C_delay + C_dispersion * r.repick()  
+    printf("\n C-fibres activations: fibre [%d] - delay time = %f ms", i, event_time)
+    
+    //netcon = new NetCon(source, target, threshold [mV], delay [ms], weight [uS])
+    interneuron.hillock ampa_interneuron_conn[i]  = new NetCon(&v(0.5), ampar_interneuron[i],  -30.0, event_time,     0.00020) //0.00020 (0.00047 in NMDA block exp)
+    interneuron.hillock nmda_interneuron_conn[i]  = new NetCon(&v(0.5), nmdar_interneuron[i],  -30.0, event_time,     0.00020) //0.00020
+    interneuron.hillock gabaa_interneuron_conn[i] = new NetCon(&v(0.5), gabaar_interneuron[i], -30.0, event_time+1.0, 0.00020) //+1.0, 0.00020 (this is not required for windup!; it serves only the purpose of demostrating that GABA_A blockers enhance windup profile responses)
+    
+}
+
+
+
+
+	
+// 5 ****************************************************************************************************
+
+// PROVIDE NOISE TO THE WDR MEMBRANE POTENTIAL
+
+// create source of stimulation for inhibitory and excitatory noise synapses
+objref stim_exc, stim_inh
+
+wdr.soma stim_exc = new NetStim(0.5)
+stim_exc.interval	= 10.0
+stim_exc.start		= 0.0
+stim_exc.number		= 1000000
+stim_exc.noise		= 1.0
+
+wdr.soma stim_inh = new NetStim(0.5)
+stim_inh.interval	= 10.0
+stim_inh.start		= 0.0
+stim_inh.number		= 1000000
+stim_inh.noise		= 1.0
+
+
+objref ampar_noise, gabaar_noise
+
+wdr.soma ampar_noise = new AMPA_DynSyn(0.5)   // excitatory
+ampar_noise.tau_fac    = 0.1
+ampar_noise.tau_rec    = 0.1
+ampar_noise.U1         = 1.0 
+ampar_noise.tau_rise   = 0.1
+ampar_noise.tau_decay  = 5.0
+
+wdr.soma gabaar_noise = new GABAa_DynSyn(0.5) // inhibitory
+gabaar_noise.tau_fac    = 0.1
+gabaar_noise.tau_rec    = 0.1
+gabaar_noise.U1         = 1.0 
+gabaar_noise.tau_rise   = 0.1
+gabaar_noise.tau_decay  = 5.0
+
+
+//netcon = new NetCon(source, target, threshold [mV], delay [ms], weight [uS])
+objref ampa_noise_conn, gabaa_noise_conn
+ampa_noise_conn  = new NetCon(stim_exc, ampar_noise,  -30.0, 0.0, 0.0001) //0.0001
+gabaa_noise_conn = new NetCon(stim_exc, gabaar_noise, -30.0, 0.0, 0.0001) //0.0001
+//the mean of the noise current is roughly 0.001 mA/cm²
+
+//ampa_noise_conn  = new NetCon(stim_exc, ampar_noise,  -30.0, 0.0, 0.000) //0.000100
+//gabaa_noise_conn = new NetCon(stim_inh, gabaar_noise, -30.0, 0.0, 0.000) //0.000429
+//the mean of this synaptic noise current (0.000429 GABAA + 0.000100 AMPA) is roughly 0.0 mA/cm²;
+//the stdev of fluctuations produced in the membrane potential is 0.5226 mV
+//this assumes a resting potential of -64.8806 mV (E_GABAA=-80mV; E_AMPA=0mV)
+
+
+
+
+// 6 ****************************************************************************************************
+
+// FINAL COMMANDS
+
+// store spike-times
+objref nc, nil, vec
+wdr.soma nc = new NetCon(&v(.5), nil, -30.0, 0.0, 1.0)
+vec = new Vector()
+nc.record(vec)
+
+
+
+access wdr.soma
+
+load_file("wdr-complete-model.ses")
+
+tstop = (n_stim_sets + 1) * T2 + start_time
+
+celsius = 36
+
+dt = 0.0125 //has finite representation in binary
+
+
+init()
+
+//forall cvode.print_event_queue()
+xpanel("Aguiar et al. 2010")
+  xbutton("Click here to START simulation to reproduce Fig 2A","run()")
+  xlabel("(The simulation takes a few minutes)")
+xpanel()
+
+
+// write spike times to file "wdr_spike_times.dat"
+objref fileobj
+fileobj = new File()
+fileobj.wopen("wdr_spike_times.dat")
+vec.printf(fileobj)
+fileobj.close()
+
+
+
+
+
+//************************************************************************************
+//UNITS	    
+//Category						Variable		Units
+//Time							t				[ms]
+//Voltage						v				[mV]
+//Current						i				[mA/cm2] (distributed)	[nA] (point process)
+//Concentration					ko, ki, etc.	[mM]
+//Specific capacitance			cm				[uf/cm2]
+//Length						diam, L			[um]
+//Conductance					g				[S/cm2] (distributed)	[uS] (point process)
+//Cytoplasmic resistivity		Ra				[ohm cm]
+//Resistance					Ri				[10E6 ohm]
