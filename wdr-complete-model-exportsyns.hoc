@@ -179,6 +179,7 @@ fih = new FInitializeHandler("loadqueue()")
 proc loadqueue() { local ii, jj, event_time  localobj r
         
     r = new Random(123456789) // use a different seed if you need different random streams; "123456789" is the seed used in the paper figure
+    r.Random123()
     
     //load Ad-fiber spike times
     for ii=0,stim_times.size()-1 {
@@ -223,6 +224,7 @@ objref ampa_interneuron_conn[N_IC], nmda_interneuron_conn[N_IC], gabaa_interneur
 
 objref r
 r = new Random(123456789) // use a different seed if you need different random streams; the seed used for the figures in the paper was 123456789
+r.Random123()
 
 for i=0,N_IC-1 {
     
